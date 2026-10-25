@@ -6,6 +6,7 @@ mod lava;
 mod plasma;
 mod starfield;
 mod synthwave;
+mod video;
 
 use anyhow::{bail, Result};
 
@@ -15,6 +16,12 @@ use crate::render::{Frame, FrameCtx};
 pub trait Scene: Send {
     /// Draw one frame into `frame` (already sized to the render resolution).
     fn render(&mut self, frame: &mut Frame, ctx: &FrameCtx);
+
+    /// Render at the screen's full resolution regardless of `render_scale`
+    /// (photos and videos look blurry otherwise).
+    fn native_resolution(&self) -> bool {
+        false
+    }
 
     /// False while the scene is still loading assets in the background.
     fn is_ready(&self) -> bool {
@@ -141,6 +148,28 @@ pub const SCENES: &[SceneInfo] = &[
         build: |p| Ok(Box::new(synthwave::Synthwave::new(p))),
     },
     SceneInfo {
+        name: "video",
+        description: "Your own video, looped silently",
+        params: &[
+            ParamSpec {
+                key: "path",
+                label: "Video file",
+                kind: ParamKind::Path,
+            },
+            float("speed", "Playback speed", 0.25, 4.0, 1.0),
+            int("fps", "Video frame rate", 10, 60, 30),
+            ParamSpec {
+                key: "fit",
+                label: "Fit",
+                kind: ParamKind::Choice {
+                    options: &["cover", "contain"],
+                    default: "cover",
+                },
+            },
+        ],
+        build: |p| Ok(Box::new(video::VideoScene::new(p)?)),
+    },
+    SceneInfo {
         name: "image",
         description: "Static image or slideshow with crossfades and Ken Burns zoom",
         params: &[
@@ -164,6 +193,13 @@ pub const SCENES: &[SceneInfo] = &[
         build: |p| Ok(Box::new(image::ImageScene::new(p)?)),
     },
 ];
+
+impl SceneInfo {
+    /// Scenes that show the user's own files rather than built-in art.
+    pub fn is_user_media(&self) -> bool {
+        matches!(self.name, "image" | "video")
+    }
+}
 
 pub fn build(name: &str, params: &Params) -> Result<Box<dyn Scene>> {
     match SCENES.iter().find(|s| s.name.eq_ignore_ascii_case(name)) {
@@ -213,6 +249,20 @@ impl Params {
             }),
             None => default,
         }
+    }
+}
+
+/// Expand a leading `~` to the home directory.
+pub(crate) fn expand_tilde(raw: &str) -> std::path::PathBuf {
+    let raw = raw.trim();
+    match raw
+        .strip_prefix("~/")
+        .or(if raw == "~" { Some("") } else { None })
+    {
+        Some(rest) => dirs::home_dir()
+            .map(|h| h.join(rest))
+            .unwrap_or_else(|| raw.into()),
+        None => raw.into(),
     }
 }
 
@@ -275,7 +325,7 @@ mod tests {
     /// and should be deterministic for a given time.
     #[test]
     fn procedural_scenes_render() {
-        for info in SCENES.iter().filter(|s| s.name != "image") {
+        for info in SCENES.iter().filter(|s| !s.is_user_media()) {
             let render = || {
                 let mut scene = build(info.name, &Params::default()).unwrap();
                 let mut frame = Frame::new(96, 54);

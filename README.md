@@ -6,7 +6,7 @@ Linux (X11) also works.
 
 ![Built-in scenes](docs/scenes.png)
 
-*aurora, plasma, starfield, lava, synthwave (plus `image` for your own pictures)*
+*Built-in scenes: aurora, plasma, starfield, lava, synthwave. You can also use your own videos, images, and slideshow folders.*
 
 ## Features
 
@@ -22,30 +22,44 @@ Linux (X11) also works.
   - Rendering is spread across all cores with rayon.
 - **Live config.** Edit `config.toml` and the change appears within a second.
   A broken edit is logged and ignored.
-- **Image slideshows** with crossfades and a slow Ken Burns zoom/pan.
+- **Your own videos** as wallpapers (anything FFmpeg plays), plus images and
+  slideshows with crossfades and a slow Ken Burns zoom/pan.
+- **A settings window** with a gallery, live previews, and drag-and-drop.
 - **Background mode, `stop`, and autostart at login** on Windows.
 - Puts your normal wallpaper back when it exits.
 
 ## Settings window
 
-Double-click `rusty-wallpaper.exe` (or run `rusty-wallpaper ui`) to open the
-settings window.
+Double-click `rusty-wallpaper.exe` (or run `rusty-wallpaper ui`) to open it.
 
 ![Settings window](docs/settings.png)
 
-- Pick a scene on the left. The animated preview updates as you change its
-  settings.
-- **Start wallpaper** saves your settings and puts the wallpaper on the
-  desktop. **Stop wallpaper** removes it.
-- When the wallpaper is already running, **Apply** updates it live.
-- **Start at login** makes the wallpaper start automatically when you log in.
-- The **Image** scene has *Folder…* and *File…* buttons for choosing your
-  pictures.
-- **General** holds the frame rate, quality (render resolution), animation
-  speed, which monitors to use, and pausing behind fullscreen apps.
+- Click any card to see its live preview and settings on the right.
+- **Set as wallpaper** puts the selection on your desktop. After that,
+  **Apply to desktop** updates the running wallpaper live.
+- **Your wallpapers** holds your own videos, images and slideshow folders.
+  Click **+ Add video or image**, or drag files onto the window. Right-click
+  a card to remove it.
+- The **Performance & startup** section has the frame rate, quality, speed,
+  monitor selection, pausing behind fullscreen apps, and **Start with
+  Windows**.
 
 The wallpaper runs as its own background process, so it keeps going after you
 close the settings window.
+
+## Video wallpapers
+
+Any video FFmpeg can play (mp4, mkv, webm, mov, avi, …) can be a wallpaper.
+It loops silently at your screen's full resolution. On Windows, FFmpeg decodes
+on the GPU (D3D11VA/DXVA2) when it can. Each video has its own playback speed,
+frame rate, and fit setting (cover or contain).
+
+The Windows download from CI ships `ffmpeg.exe` next to `rusty-wallpaper.exe`,
+so there's nothing extra to install. That's the LGPL build from
+[BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), and its license
+is included as `FFMPEG-LICENSE.txt`. If you build from source, put
+`ffmpeg.exe` next to the exe or install FFmpeg on your PATH
+(`winget install ffmpeg`).
 
 ## Command line (Windows)
 
@@ -68,8 +82,9 @@ rusty-wallpaper autostart off
 Only one desktop instance runs at a time. In background mode, logs go to
 `%LOCALAPPDATA%\rusty-wallpaper\rusty-wallpaper.log`.
 
-CI builds a ready-made `rusty-wallpaper.exe` on every push. Download it from
-the **rusty-wallpaper-windows-x64** artifact of the latest *CI* workflow run.
+CI builds a ready-to-run package on every push: `rusty-wallpaper.exe`,
+`ffmpeg.exe`, and an example config. Download it from the
+**rusty-wallpaper-windows-x64** artifact of the latest *CI* workflow run.
 
 ## Commands
 

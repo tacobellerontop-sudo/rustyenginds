@@ -9,7 +9,7 @@ use image::RgbImage;
 
 use crate::render::math::*;
 use crate::render::{pack3, Frame, FrameCtx};
-use crate::scene::{Params, Scene};
+use crate::scene::{expand_tilde, Params, Scene};
 
 /// Larger sources are downscaled on load; nobody needs a 50MP wallpaper in RAM.
 const MAX_SOURCE_DIM: u32 = 3840;
@@ -118,6 +118,10 @@ impl ImageScene {
 impl Scene for ImageScene {
     fn is_ready(&self) -> bool {
         self.current.is_some() || self.paths.is_empty()
+    }
+
+    fn native_resolution(&self) -> bool {
+        true
     }
 
     fn render(&mut self, frame: &mut Frame, ctx: &FrameCtx) {
@@ -238,18 +242,6 @@ fn load_image(path: &Path) -> Result<RgbImage> {
         img
     };
     Ok(img.to_rgb8())
-}
-
-fn expand_tilde(raw: &str) -> PathBuf {
-    match raw
-        .strip_prefix("~/")
-        .or(if raw == "~" { Some("") } else { None })
-    {
-        Some(rest) => dirs::home_dir()
-            .map(|h| h.join(rest))
-            .unwrap_or_else(|| raw.into()),
-        None => raw.into(),
-    }
 }
 
 fn collect_images(path: &Path) -> Result<Vec<PathBuf>> {

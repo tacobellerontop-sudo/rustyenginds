@@ -35,6 +35,14 @@ pub struct Config {
     pub pause_when_covered: bool,
     /// Per-scene parameters, e.g. `[scenes.aurora] speed = 0.5`.
     pub scenes: BTreeMap<String, toml::Table>,
+    /// Videos, images and folders the user added in the settings window.
+    pub library: Vec<LibraryItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct LibraryItem {
+    pub name: String,
+    pub path: PathBuf,
 }
 
 impl Default for Config {
@@ -47,6 +55,7 @@ impl Default for Config {
             monitor: MonitorSelect::All,
             pause_when_covered: true,
             scenes: BTreeMap::new(),
+            library: Vec::new(),
         }
     }
 }
@@ -179,6 +188,10 @@ mod tests {
         let mut cfg = Config::parse(EXAMPLE_CONFIG).unwrap();
         cfg.monitor = MonitorSelect::Index(1);
         cfg.fps = 24;
+        cfg.library.push(LibraryItem {
+            name: "Rain".into(),
+            path: "C:/Videos/rain.mp4".into(),
+        });
         let path = std::env::temp_dir().join(format!("rusty-wallpaper-cfg-{}.toml", std::process::id()));
         cfg.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), cfg);

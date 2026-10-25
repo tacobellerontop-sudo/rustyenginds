@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod ffmpeg;
 mod platform;
 mod render;
 mod scene;

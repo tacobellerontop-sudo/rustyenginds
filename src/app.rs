@@ -307,6 +307,7 @@ impl App {
         let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) else {
             return Ok(());
         };
+        let scale = if out.scene.native_resolution() { 1.0 } else { scale };
         let rw = ((width as f32 * scale).round() as usize).max(1);
         let rh = ((height as f32 * scale).round() as usize).max(1);
         out.frame.resize(rw, rh);

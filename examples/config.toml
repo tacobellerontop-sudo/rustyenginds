@@ -1,7 +1,7 @@
 # rusty-wallpaper configuration.
 # Edits are picked up live while the engine is running.
 
-# Scene to show: aurora, plasma, starfield, lava, synthwave, image
+# Scene to show: aurora, plasma, starfield, lava, synthwave, video, image
 scene = "aurora"
 
 # Frame-rate cap. Wallpapers rarely need more than 30.
@@ -51,6 +51,13 @@ background = "#1a0633"
 speed = 1.0
 sun = "#ff2a6d"
 grid = "#05d9e8"
+
+[scenes.video]
+# Any video FFmpeg can play: mp4, mkv, webm, mov, ...
+path = "~/Videos/wallpaper.mp4"
+speed = 1.0      # playback speed
+fps = 30         # decode rate; lower saves CPU
+fit = "cover"    # "cover" or "contain"
 
 [scenes.image]
 # A single image file or a directory of images (shown as a slideshow).
