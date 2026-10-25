@@ -1,10 +1,10 @@
 //! User configuration (`config.toml`).
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Which monitors get a wallpaper window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -16,7 +16,7 @@ pub enum MonitorSelect {
     Index(usize),
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Scene to display; see `rusty-wallpaper list`.
@@ -28,13 +28,13 @@ pub struct Config {
     pub render_scale: f32,
     /// Speed multiplier applied to every scene's clock.
     pub time_scale: f32,
-    #[serde(deserialize_with = "monitor_serde::deserialize")]
+    #[serde(with = "monitor_serde")]
     pub monitor: MonitorSelect,
     /// Stop rendering on a monitor while a fullscreen or maximized app hides
     /// it (Windows).
     pub pause_when_covered: bool,
     /// Per-scene parameters, e.g. `[scenes.aurora] speed = 0.5`.
-    pub scenes: HashMap<String, toml::Table>,
+    pub scenes: BTreeMap<String, toml::Table>,
 }
 
 impl Default for Config {
@@ -46,7 +46,7 @@ impl Default for Config {
             time_scale: 1.0,
             monitor: MonitorSelect::All,
             pause_when_covered: true,
-            scenes: HashMap::new(),
+            scenes: BTreeMap::new(),
         }
     }
 }
@@ -80,6 +80,24 @@ impl Config {
         }
     }
 
+    /// Write the config, e.g. from the settings UI. A running engine picks the
+    /// change up live. Comments in a hand-edited file are not preserved.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let body = toml::to_string_pretty(self).context("serializing config")?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        // Write-then-rename so the engine never reloads a half-written file.
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(
+            &tmp,
+            format!("# Saved by the rusty-wallpaper settings window.\n\n{body}"),
+        )
+        .with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+        Ok(())
+    }
+
     pub fn params_for(&self, scene: &str) -> crate::scene::Params {
         crate::scene::Params::new(self.scenes.get(scene).cloned().unwrap_or_default())
     }
@@ -88,7 +106,14 @@ impl Config {
 /// `monitor = "all"` or `monitor = 1`.
 mod monitor_serde {
     use super::MonitorSelect;
-    use serde::{de, Deserialize, Deserializer};
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(m: &MonitorSelect, s: S) -> Result<S::Ok, S::Error> {
+        match m {
+            MonitorSelect::All => s.serialize_str("all"),
+            MonitorSelect::Index(i) => s.serialize_u64(*i as u64),
+        }
+    }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<MonitorSelect, D::Error> {
         #[derive(Deserialize)]
@@ -147,6 +172,17 @@ mod tests {
         );
         assert!(Config::parse("monitor = -1").is_err());
         assert!(Config::parse("monitor = \"left\"").is_err());
+    }
+
+    #[test]
+    fn save_roundtrips() {
+        let mut cfg = Config::parse(EXAMPLE_CONFIG).unwrap();
+        cfg.monitor = MonitorSelect::Index(1);
+        cfg.fps = 24;
+        let path = std::env::temp_dir().join(format!("rusty-wallpaper-cfg-{}.toml", std::process::id()));
+        cfg.save(&path).unwrap();
+        assert_eq!(Config::load(&path).unwrap(), cfg);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

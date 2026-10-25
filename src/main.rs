@@ -5,6 +5,7 @@ mod config;
 mod platform;
 mod render;
 mod scene;
+mod ui;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -28,6 +29,12 @@ struct Cli {
 enum Command {
     /// Show the wallpaper (the default when no command is given).
     Run(RunArgs),
+    /// Open the settings window (also what double-clicking the exe does on Windows).
+    Ui {
+        /// Config file to edit [default: <config dir>/rusty-wallpaper/config.toml].
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
     /// List the built-in scenes.
     List,
     /// List monitors and their indices.
@@ -90,7 +97,13 @@ struct RenderArgs {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // Double-clicked from Explorer with no arguments: show the settings
+    // window rather than a bare console.
+    if cli.command.is_none() && std::env::args_os().len() == 1 && platform::launched_from_explorer() {
+        platform::detach_console();
+        cli.command = Some(Command::Ui { config: None });
+    }
     let background = match &cli.command {
         None => cli.run.background,
         Some(Command::Run(a)) => a.background,
@@ -133,6 +146,12 @@ fn real_main(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Monitors) => app::list_monitors(),
+        Some(Command::Ui { config }) => {
+            let path = config
+                .or_else(Config::default_path)
+                .context("couldn't determine the config directory")?;
+            ui::run(path)
+        }
         Some(Command::Render(args)) => render_png(args),
         Some(Command::Init { force }) => init(force),
         Some(Command::Stop) => {

@@ -13,10 +13,12 @@ use anyhow::{bail, Context, Result};
 use windows_sys::core::BOOL;
 use windows_sys::w;
 use windows_sys::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, FALSE, HWND, LPARAM, RECT, TRUE,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, FALSE, HWND, LPARAM, RECT, TRUE,
 };
-use windows_sys::Win32::System::Console::FreeConsole;
-use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+use windows_sys::Win32::System::Registry::{
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+};
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcessId, OpenEventW, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE,
     INFINITE,
@@ -200,11 +202,39 @@ pub fn signal_stop() -> Result<bool> {
         if event.is_null() {
             return Ok(false);
         }
-        if SetEvent(event) == 0 {
+        let ok = SetEvent(event);
+        CloseHandle(event);
+        if ok == 0 {
             bail!("SetEvent failed (error {})", GetLastError());
         }
     }
     Ok(true)
+}
+
+/// Whether a desktop instance currently holds the single-instance lock.
+pub fn is_running() -> bool {
+    unsafe {
+        let event = OpenEventW(EVENT_MODIFY_STATE, FALSE, STOP_EVENT);
+        if event.is_null() {
+            return false;
+        }
+        CloseHandle(event);
+        true
+    }
+}
+
+/// True when we own our console, i.e. we were started by double-clicking
+/// the exe rather than from a terminal.
+pub fn launched_from_explorer() -> bool {
+    let mut pids = [0u32; 2];
+    unsafe { GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) == 1 }
+}
+
+/// Start `cmd` without flashing a console window.
+pub fn hide_console_window(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
 /// Close the console window we were started with (for `--background`).
@@ -216,6 +246,20 @@ pub fn detach_console() {
 
 const RUN_KEY: windows_sys::core::PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const RUN_VALUE: windows_sys::core::PCWSTR = w!("rusty-wallpaper");
+
+pub fn autostart_enabled() -> bool {
+    unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            RUN_VALUE,
+            RRF_RT_REG_SZ,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+        ) == 0
+    }
+}
 
 /// Add or remove ourselves from `HKCU\...\Run` so we start at login.
 pub fn autostart(enable: bool, args: &str) -> Result<()> {

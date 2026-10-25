@@ -26,38 +26,141 @@ pub trait Scene: Send {
 pub struct SceneInfo {
     pub name: &'static str,
     pub description: &'static str,
+    /// The `[scenes.<name>]` keys this scene reads, for the settings UI.
+    pub params: &'static [ParamSpec],
     build: fn(&Params) -> Result<Box<dyn Scene>>,
 }
+
+/// One tweakable scene parameter. Defaults mirror the ones scenes use.
+pub struct ParamSpec {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub kind: ParamKind,
+}
+
+pub enum ParamKind {
+    Float {
+        min: f32,
+        max: f32,
+        default: f32,
+    },
+    Int {
+        min: i64,
+        max: i64,
+        default: i64,
+    },
+    Color {
+        default: &'static str,
+    },
+    Path,
+    Choice {
+        options: &'static [&'static str],
+        default: &'static str,
+    },
+}
+
+const fn float(key: &'static str, label: &'static str, min: f32, max: f32, default: f32) -> ParamSpec {
+    ParamSpec {
+        key,
+        label,
+        kind: ParamKind::Float { min, max, default },
+    }
+}
+
+const fn int(key: &'static str, label: &'static str, min: i64, max: i64, default: i64) -> ParamSpec {
+    ParamSpec {
+        key,
+        label,
+        kind: ParamKind::Int { min, max, default },
+    }
+}
+
+const fn color(key: &'static str, label: &'static str, default: &'static str) -> ParamSpec {
+    ParamSpec {
+        key,
+        label,
+        kind: ParamKind::Color { default },
+    }
+}
+
+const SPEED: ParamSpec = float("speed", "Speed", 0.0, 3.0, 1.0);
 
 pub const SCENES: &[SceneInfo] = &[
     SceneInfo {
         name: "aurora",
         description: "Northern lights rippling over a starry sky",
+        params: &[
+            SPEED,
+            float("intensity", "Intensity", 0.0, 3.0, 1.0),
+            color("color_a", "Lower color", "#22ff99"),
+            color("color_b", "Upper color", "#7a3cff"),
+            float("stars", "Stars", 0.0, 2.0, 1.0),
+        ],
         build: |p| Ok(Box::new(aurora::Aurora::new(p))),
     },
     SceneInfo {
         name: "plasma",
         description: "Classic demoscene plasma with a cycling cosine palette",
+        params: &[
+            SPEED,
+            float("scale", "Scale", 1.0, 20.0, 8.0),
+            float("palette_shift", "Palette shift", 0.0, 1.0, 0.0),
+        ],
         build: |p| Ok(Box::new(plasma::Plasma::new(p))),
     },
     SceneInfo {
         name: "starfield",
         description: "Flying through space; set warp > 0 for light-speed streaks",
+        params: &[
+            int("count", "Stars", 50, 5000, 900),
+            SPEED,
+            float("warp", "Warp", 0.0, 3.0, 0.0),
+        ],
         build: |p| Ok(Box::new(starfield::Starfield::new(p))),
     },
     SceneInfo {
         name: "lava",
         description: "Lava lamp metaballs drifting and merging",
+        params: &[
+            int("blobs", "Blobs", 1, 20, 7),
+            SPEED,
+            color("color_a", "Edge color", "#ff4d00"),
+            color("color_b", "Core color", "#ffd000"),
+            color("background", "Background", "#1a0633"),
+        ],
         build: |p| Ok(Box::new(lava::Lava::new(p))),
     },
     SceneInfo {
         name: "synthwave",
         description: "Retro sunset with a scrolling neon grid",
+        params: &[
+            SPEED,
+            color("sun", "Sun", "#ff2a6d"),
+            color("grid", "Grid", "#05d9e8"),
+        ],
         build: |p| Ok(Box::new(synthwave::Synthwave::new(p))),
     },
     SceneInfo {
         name: "image",
         description: "Static image or slideshow with crossfades and Ken Burns zoom",
+        params: &[
+            ParamSpec {
+                key: "path",
+                label: "Image or folder",
+                kind: ParamKind::Path,
+            },
+            float("interval", "Seconds per image", 1.0, 600.0, 60.0),
+            float("fade", "Crossfade (s)", 0.0, 10.0, 2.0),
+            float("zoom", "Zoom", 0.0, 0.5, 0.08),
+            ParamSpec {
+                key: "fit",
+                label: "Fit",
+                kind: ParamKind::Choice {
+                    options: &["cover", "contain"],
+                    default: "cover",
+                },
+            },
+        ],
         build: |p| Ok(Box::new(image::ImageScene::new(p)?)),
     },
 ];
@@ -148,6 +251,19 @@ mod tests {
         assert_eq!(p.f32("c", 9.0), 9.0);
         assert_eq!(p.f32("missing", 3.0), 3.0);
         assert_eq!(p.usize("a", 0, 1), 1);
+    }
+
+    /// The UI's parameter list and the documented example config must agree.
+    #[test]
+    fn param_specs_match_example_config() {
+        let cfg = crate::config::Config::parse(crate::config::EXAMPLE_CONFIG).unwrap();
+        for info in SCENES {
+            let mut documented: Vec<_> = cfg.scenes[info.name].keys().map(String::as_str).collect();
+            let mut spec: Vec<_> = info.params.iter().map(|p| p.key).collect();
+            documented.sort();
+            spec.sort();
+            assert_eq!(documented, spec, "{}", info.name);
+        }
     }
 
     #[test]

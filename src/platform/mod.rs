@@ -4,8 +4,8 @@
 mod windows;
 #[cfg(windows)]
 pub use self::windows::{
-    attach_to_desktop, autostart, desktop_attributes, desktop_covered, detach_console, signal_stop,
-    single_instance, DesktopGuard,
+    attach_to_desktop, autostart, autostart_enabled, desktop_attributes, desktop_covered, detach_console,
+    hide_console_window, is_running, launched_from_explorer, signal_stop, single_instance, DesktopGuard,
 };
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -61,6 +61,20 @@ mod portable {
     }
 
     pub fn detach_console() {}
+
+    pub fn is_running() -> bool {
+        false
+    }
+
+    pub fn launched_from_explorer() -> bool {
+        false
+    }
+
+    pub fn hide_console_window(_cmd: &mut std::process::Command) {}
+
+    pub fn autostart_enabled() -> bool {
+        false
+    }
 
     pub fn autostart(_enable: bool, _args: &str) -> Result<()> {
         bail!("`autostart` is only supported on Windows; use your desktop's autostart settings")

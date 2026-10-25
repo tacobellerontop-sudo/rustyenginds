@@ -26,7 +26,28 @@ Linux (X11) also works.
 - **Background mode, `stop`, and autostart at login** on Windows.
 - Puts your normal wallpaper back when it exits.
 
-## Quick start (Windows)
+## Settings window
+
+Double-click `rusty-wallpaper.exe` (or run `rusty-wallpaper ui`) to open the
+settings window.
+
+![Settings window](docs/settings.png)
+
+- Pick a scene on the left. The animated preview updates as you change its
+  settings.
+- **Start wallpaper** saves your settings and puts the wallpaper on the
+  desktop. **Stop wallpaper** removes it.
+- When the wallpaper is already running, **Apply** updates it live.
+- **Start at login** makes the wallpaper start automatically when you log in.
+- The **Image** scene has *Folder…* and *File…* buttons for choosing your
+  pictures.
+- **General** holds the frame rate, quality (render resolution), animation
+  speed, which monitors to use, and pausing behind fullscreen apps.
+
+The wallpaper runs as its own background process, so it keeps going after you
+close the settings window.
+
+## Command line (Windows)
 
 ```powershell
 cargo build --release
@@ -55,6 +76,7 @@ the **rusty-wallpaper-windows-x64** artifact of the latest *CI* workflow run.
 | Command | What it does |
 | --- | --- |
 | `rusty-wallpaper [run] [-s SCENE] [-c CONFIG] [--fps N] [-w] [--background]` | Show the wallpaper (the default command) |
+| `rusty-wallpaper ui [-c CONFIG]` | Open the settings window |
 | `rusty-wallpaper list` | List the built-in scenes |
 | `rusty-wallpaper monitors` | List monitors and their indices |
 | `rusty-wallpaper render OUT.png [-s SCENE] [--width W --height H] [-t SECONDS]` | Render one frame to a PNG |
