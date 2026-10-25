@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -459,6 +459,13 @@ impl SettingsApp {
         };
         let mut cmd = Command::new(exe);
         cmd.arg("--background").arg("--config").arg(&self.config_path);
+        // After the settings window detaches from its console (double-click
+        // launch), inheriting the dead console handles makes CreateProcess
+        // fail with ERROR_NOT_SUPPORTED (os error 50). The engine logs to a
+        // file in background mode, so it needs no stdio at all.
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         platform::hide_console_window(&mut cmd);
         match cmd.spawn() {
             Ok(child) => {
