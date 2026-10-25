@@ -135,8 +135,10 @@ fn read_frames(mut out: impl Read, pixels: usize, tx: SyncSender<Result<Vec<u32>
             return;
         }
         let frame = bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], 0]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&[b, g, r, _]| u32::from_le_bytes([b, g, r, 0]))
             .collect();
         if tx.send(Ok(frame)).is_err() {
             return; // decoder dropped
