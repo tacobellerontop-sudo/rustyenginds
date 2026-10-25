@@ -1,0 +1,61 @@
+# rusty-wallpaper configuration.
+# Edits are picked up live while the engine is running.
+
+# Scene to show: aurora, plasma, starfield, lava, synthwave, image
+scene = "aurora"
+
+# Frame-rate cap. Wallpapers rarely need more than 30.
+fps = 30
+
+# Internal render resolution relative to the screen (0.1 - 1.0).
+# 0.5 renders a quarter of the pixels and upscales smoothly.
+render_scale = 0.5
+
+# Global animation speed multiplier.
+time_scale = 1.0
+
+# "all" or a monitor index (see `rusty-wallpaper monitors`).
+monitor = "all"
+
+# Stop rendering while a fullscreen or maximized window (a game, a video,
+# a maximized browser) hides the wallpaper. Windows only.
+pause_when_covered = true
+
+# Per-scene parameters. Colors are "#rrggbb" strings.
+
+[scenes.aurora]
+speed = 1.0
+intensity = 1.0
+color_a = "#22ff99"
+color_b = "#7a3cff"
+stars = 1.0
+
+[scenes.plasma]
+speed = 1.0
+scale = 8.0
+palette_shift = 0.0
+
+[scenes.starfield]
+count = 900
+speed = 1.0
+warp = 0.0
+
+[scenes.lava]
+blobs = 7
+speed = 1.0
+color_a = "#ff4d00"
+color_b = "#ffd000"
+background = "#1a0633"
+
+[scenes.synthwave]
+speed = 1.0
+sun = "#ff2a6d"
+grid = "#05d9e8"
+
+[scenes.image]
+# A single image file or a directory of images (shown as a slideshow).
+path = "~/Pictures/Wallpapers"
+interval = 60.0  # seconds per image
+fade = 2.0       # crossfade duration
+zoom = 0.08      # slow "Ken Burns" zoom amount; 0 disables
+fit = "cover"    # "cover" or "contain"
