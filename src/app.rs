@@ -63,6 +63,7 @@ struct Output {
     covered: bool,
     /// Full-resolution frame for platforms that present it themselves.
     present_buf: Vec<u32>,
+    presented: bool,
     // Declared last so it is dropped after the window: restoring the desktop
     // must happen once our window is gone.
     desktop: Option<DesktopGuard>,
@@ -227,6 +228,7 @@ impl App {
                 covered: false,
                 desktop: guard,
                 present_buf: Vec::new(),
+                presented: false,
             });
         }
         self.context = Some(context);
@@ -327,6 +329,10 @@ impl App {
             out.frame
                 .upscale_into(&mut out.present_buf, width as usize, height as usize);
             if let Some(result) = desktop.present(&out.present_buf, width as usize, height as usize) {
+                if result.is_ok() && !out.presented {
+                    out.presented = true;
+                    log::info!("first frame presented ({width}x{height})");
+                }
                 return result;
             }
         }
@@ -342,6 +348,10 @@ impl App {
             .upscale_into(&mut buffer, width as usize, height as usize);
         out.window.pre_present_notify();
         buffer.present().map_err(|e| anyhow::anyhow!("presenting: {e}"))?;
+        if !out.presented {
+            out.presented = true;
+            log::info!("first frame presented ({width}x{height})");
+        }
         Ok(())
     }
 }

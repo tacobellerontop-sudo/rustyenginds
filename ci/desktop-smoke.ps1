@@ -73,17 +73,26 @@ $cfg = "$PWD/smoke/config.toml"
 ./dist/rusty-wallpaper.exe desktop-info
 Shot before
 
-foreach ($mode in 'gdi', 'ulw') {
-    "#################### present mode: $mode"
+# placement / present-mode combinations. "none" is the control: a plain
+# topmost window, proving the sampling can see our pixels at all.
+$trials = @(
+    @('none', 'gdi'),
+    @('default', 'gdi'),
+    @('default', 'ulw'),
+    @('progman-top', 'gdi'),
+    @('worker', 'gdi')
+)
+foreach ($t in $trials) {
+    $attach, $mode = $t
+    "#################### placement: $attach, present: $mode"
+    $env:RUSTY_WALLPAPER_ATTACH = $(if ($attach -eq 'default') { '' } else { $attach })
     $env:RUSTY_WALLPAPER_PRESENT = $mode
     $p = Start-Process ./dist/rusty-wallpaper.exe -ArgumentList '--background', '--config', $cfg -PassThru
-    Start-Sleep 8
-    "== engine still running after 8s: $(-not $p.HasExited)"
-    Shot "during-$mode"
+    Start-Sleep 6
+    "== engine still running: $(-not $p.HasExited)"
+    Shot "during $attach/$mode"
     ./dist/rusty-wallpaper.exe stop
-    Start-Sleep 3
-    "== engine exited: $($p.HasExited) (code $($p.ExitCode))"
-    Shot "after-$mode"
-    "== engine log ($mode):"
-    Get-Content "$env:LOCALAPPDATA/rusty-wallpaper/rusty-wallpaper.log"
+    Start-Sleep 2
+    "== engine log:"
+    Get-Content "$env:LOCALAPPDATA/rusty-wallpaper/rusty-wallpaper.log" | Select-String -Pattern 'presenting|attached|first frame|rusty-wallpaper \(|ERROR|WARN'
 }

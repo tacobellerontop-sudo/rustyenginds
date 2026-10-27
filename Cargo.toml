@@ -28,6 +28,7 @@ embed-manifest = "1.5"
 rfd = "0.17"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_Console",

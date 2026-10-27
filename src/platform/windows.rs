@@ -16,6 +16,7 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, FALSE, HWND, LPARAM, POINT, RECT,
     SIZE, TRUE,
 };
+use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, ScreenToClient, SelectObject, AC_SRC_ALPHA,
     AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
@@ -33,9 +34,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, IsZoomed,
     SendMessageTimeoutW, SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW, SetWindowPos,
     SystemParametersInfoW, UpdateLayeredWindow, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM,
-    LWA_ALPHA, SMTO_NORMAL, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, ULW_ALPHA, WS_CHILD, WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP,
-    WS_POPUP,
+    HWND_TOP, HWND_TOPMOST, LWA_ALPHA, SMTO_NORMAL, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, ULW_ALPHA, WS_CHILD, WS_EX_LAYERED,
+    WS_EX_NOREDIRECTIONBITMAP, WS_POPUP,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
@@ -302,8 +303,35 @@ pub fn attach_to_desktop(
     } else {
         PresentMode::Gdi
     };
-    log::info!("presenting with {mode:?}");
+    // Diagnostic switch for testing other placements on real machines.
+    let placement = std::env::var("RUSTY_WALLPAPER_ATTACH").unwrap_or_default();
+    log::info!(
+        "presenting with {mode:?}, placement {:?}",
+        if placement.is_empty() {
+            "default"
+        } else {
+            &placement
+        }
+    );
     let (pos, size) = (monitor.position(), monitor.size());
+    if placement == "none" {
+        // Control experiment: an ordinary top-level window over the monitor.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                pos.x,
+                pos.y,
+                size.width as i32,
+                size.height as i32,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+        return Ok(DesktopGuard {
+            raised: true,
+            layered: None,
+        });
+    }
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
         SetWindowLongPtrW(
@@ -321,7 +349,11 @@ pub fn attach_to_desktop(
             if mode == PresentMode::Gdi {
                 SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
             }
-            layer.progman
+            if placement == "worker" {
+                layer.worker
+            } else {
+                layer.progman
+            }
         } else {
             layer.worker
         };
@@ -332,7 +364,9 @@ pub fn attach_to_desktop(
         // Child windows are positioned in the parent's client coordinates.
         let mut origin = POINT { x: pos.x, y: pos.y };
         ScreenToClient(parent, &mut origin);
-        let (insert_after, zflag) = if layer.raised {
+        let (insert_after, zflag) = if layer.raised && placement == "progman-top" {
+            (HWND_TOP, 0)
+        } else if layer.raised && placement != "worker" {
             (layer.defview, 0) // directly beneath the icons
         } else {
             (null_mut(), SWP_NOZORDER)
@@ -346,7 +380,7 @@ pub fn attach_to_desktop(
             size.height as i32,
             SWP_NOACTIVATE | SWP_SHOWWINDOW | zflag,
         );
-        if layer.raised {
+        if layer.raised && placement != "worker" {
             // The static wallpaper must stay underneath us.
             SetWindowPos(
                 layer.worker,
@@ -608,9 +642,11 @@ fn describe(hwnd: HWND, depth: usize) -> String {
             GetWindowLongPtrW(hwnd, GWL_STYLE),
             GetWindowLongPtrW(hwnd, GWL_EXSTYLE),
             if pid == GetCurrentProcessId() {
-                "  <- rusty-wallpaper"
+                let mut cloaked = 0u32;
+                DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED as u32, (&mut cloaked as *mut u32).cast(), 4);
+                format!("  <- rusty-wallpaper (cloaked={cloaked})")
             } else {
-                ""
+                String::new()
             },
         )
     }
