@@ -9,7 +9,9 @@ function Shot($name) {
     $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
     $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    try { $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size) }
+    # CaptureBlt: without it, layered windows (like ours) are left out.
+    $op = [System.Drawing.CopyPixelOperation]::SourceCopy -bor [System.Drawing.CopyPixelOperation]::CaptureBlt
+    try { $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size, $op) }
     catch { "== $name screenshot failed: $_"; return }
     $bmp.Save("$PWD/smoke/$name.png")
     "== $name ($($b.Width)x$($b.Height)) sampled colors:"
