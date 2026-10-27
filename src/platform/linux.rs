@@ -14,6 +14,13 @@ use winit::window::{Fullscreen, Window, WindowAttributes};
 
 pub struct DesktopGuard;
 
+impl DesktopGuard {
+    /// This platform presents through softbuffer.
+    pub fn present(&mut self, _pixels: &[u32], _width: usize, _height: usize) -> Option<Result<()>> {
+        None
+    }
+}
+
 pub fn desktop_attributes(el: &ActiveEventLoop, monitor: &MonitorHandle) -> WindowAttributes {
     let attrs = super::covering_attributes(monitor);
     if el.is_wayland() {

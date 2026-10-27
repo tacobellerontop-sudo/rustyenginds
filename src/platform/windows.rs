@@ -14,9 +14,12 @@ use windows_sys::core::BOOL;
 use windows_sys::w;
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, FALSE, HWND, LPARAM, POINT, RECT,
-    TRUE,
+    SIZE, TRUE,
 };
-use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, ScreenToClient, SelectObject, AC_SRC_ALPHA,
+    AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+};
 use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
 use windows_sys::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
@@ -29,9 +32,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetForegroundWindow, GetWindow,
     GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, IsZoomed,
     SendMessageTimeoutW, SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW, SetWindowPos,
-    SystemParametersInfoW, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, LWA_ALPHA,
-    SMTO_NORMAL, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP,
+    SystemParametersInfoW, UpdateLayeredWindow, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM,
+    LWA_ALPHA, SMTO_NORMAL, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, ULW_ALPHA, WS_CHILD, WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP,
+    WS_POPUP,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
@@ -43,6 +47,140 @@ use winit::window::{Window, WindowAttributes};
 /// stays stuck on the desktop until Explorer redraws.
 pub struct DesktopGuard {
     raised: bool,
+    /// Set when frames are pushed with UpdateLayeredWindow instead of
+    /// painted through the window's DC.
+    layered: Option<LayeredPresenter>,
+}
+
+impl DesktopGuard {
+    /// Present a full-size frame ourselves, if this window needs it.
+    /// `None` means "use the regular softbuffer path".
+    pub fn present(&mut self, pixels: &[u32], width: usize, height: usize) -> Option<Result<()>> {
+        self.layered.as_mut().map(|p| p.present(pixels, width, height))
+    }
+}
+
+/// How frames reach the window on the raised (24H2+) desktop.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PresentMode {
+    /// WS_EX_LAYERED + SetLayeredWindowAttributes, then normal GDI painting
+    /// (what Microsoft's guidance describes).
+    Gdi,
+    /// WS_EX_LAYERED + UpdateLayeredWindow with a bitmap each frame.
+    UpdateLayered,
+}
+
+fn present_mode() -> PresentMode {
+    match std::env::var("RUSTY_WALLPAPER_PRESENT").as_deref() {
+        Ok("ulw") => PresentMode::UpdateLayered,
+        _ => PresentMode::Gdi,
+    }
+}
+
+/// A 32-bit top-down DIB that frames are copied into and handed to
+/// UpdateLayeredWindow.
+struct LayeredPresenter {
+    hwnd: HWND,
+    dc: HDC,
+    bitmap: HBITMAP,
+    old: HGDIOBJ,
+    bits: *mut u32,
+    size: (usize, usize),
+}
+
+impl LayeredPresenter {
+    fn new(hwnd: HWND) -> Result<Self> {
+        let dc = unsafe { CreateCompatibleDC(null_mut()) };
+        if dc.is_null() {
+            bail!("CreateCompatibleDC failed");
+        }
+        Ok(Self {
+            hwnd,
+            dc,
+            bitmap: null_mut(),
+            old: null_mut(),
+            bits: null_mut(),
+            size: (0, 0),
+        })
+    }
+
+    fn resize(&mut self, w: usize, h: usize) -> Result<()> {
+        unsafe {
+            if !self.bitmap.is_null() {
+                SelectObject(self.dc, self.old);
+                DeleteObject(self.bitmap);
+                self.bitmap = null_mut();
+            }
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = w as i32;
+            info.bmiHeader.biHeight = -(h as i32); // top-down
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bits = null_mut();
+            let bitmap = CreateDIBSection(self.dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            if bitmap.is_null() || bits.is_null() {
+                bail!("CreateDIBSection {w}x{h} failed");
+            }
+            self.old = SelectObject(self.dc, bitmap);
+            self.bitmap = bitmap;
+            self.bits = bits.cast();
+            self.size = (w, h);
+        }
+        Ok(())
+    }
+
+    fn present(&mut self, pixels: &[u32], w: usize, h: usize) -> Result<()> {
+        if self.size != (w, h) {
+            self.resize(w, h)?;
+        }
+        unsafe {
+            // Opaque: alpha 0xFF (premultiplied is then the same as straight).
+            let dst = std::slice::from_raw_parts_mut(self.bits, w * h);
+            for (d, s) in dst.iter_mut().zip(pixels) {
+                *d = s | 0xFF00_0000;
+            }
+            let size = SIZE {
+                cx: w as i32,
+                cy: h as i32,
+            };
+            let src = POINT { x: 0, y: 0 };
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            if UpdateLayeredWindow(
+                self.hwnd,
+                null_mut(),
+                null(),
+                &size,
+                self.dc,
+                &src,
+                0,
+                &blend,
+                ULW_ALPHA,
+            ) == 0
+            {
+                bail!("UpdateLayeredWindow failed (error {})", GetLastError());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for LayeredPresenter {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.bitmap.is_null() {
+                SelectObject(self.dc, self.old);
+                DeleteObject(self.bitmap);
+            }
+            DeleteDC(self.dc);
+        }
+    }
 }
 
 impl Drop for DesktopGuard {
@@ -159,6 +297,12 @@ pub fn attach_to_desktop(
         _ => bail!("expected a Win32 window handle"),
     };
     let layer = desktop_layer()?;
+    let mode = if layer.raised {
+        present_mode()
+    } else {
+        PresentMode::Gdi
+    };
+    log::info!("presenting with {mode:?}");
     let (pos, size) = (monitor.position(), monitor.size());
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
@@ -173,7 +317,10 @@ pub fn attach_to_desktop(
             // when layered. This must happen before SetParent.
             let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
-            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+            // UpdateLayeredWindow refuses windows that had their attributes set.
+            if mode == PresentMode::Gdi {
+                SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+            }
             layer.progman
         } else {
             layer.worker
@@ -220,7 +367,14 @@ pub fn attach_to_desktop(
         );
     }
     log::info!("desktop windows after attaching:\n{}", desktop_report());
-    Ok(DesktopGuard { raised: layer.raised })
+    let layered = match mode {
+        PresentMode::UpdateLayered => Some(LayeredPresenter::new(hwnd)?),
+        PresentMode::Gdi => None,
+    };
+    Ok(DesktopGuard {
+        raised: layer.raised,
+        layered,
+    })
 }
 
 /// True when the foreground window is fullscreen or maximized on `monitor`,

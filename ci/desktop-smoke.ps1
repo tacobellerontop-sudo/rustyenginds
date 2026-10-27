@@ -27,21 +27,30 @@ $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
 "== explorer: " + ((Get-Process explorer -ErrorAction SilentlyContinue | ForEach-Object { "pid $($_.Id) session $($_.SessionId)" }) -join ', ')
 "== this session: $((Get-Process -Id $PID).SessionId)"
 
+# Show the bare desktop: the runner's console window otherwise covers it.
+(New-Object -ComObject Shell.Application).MinimizeAll()
+Start-Sleep 2
+
+# Bright scene, and no pausing behind other windows, so any pixels we
+# manage to put on the desktop are unmistakable.
+$cfg = "$PWD/smoke/config.toml"
+"scene = `"plasma`"`npause_when_covered = false`n" | Set-Content $cfg
+
 "== desktop before:"
 ./dist/rusty-wallpaper.exe desktop-info
 Shot before
 
-$p = Start-Process ./dist/rusty-wallpaper.exe -ArgumentList '--background', '--scene', 'synthwave' -PassThru
-Start-Sleep 8
-"== engine still running after 8s: $(-not $p.HasExited)"
-"== desktop during:"
-./dist/rusty-wallpaper.exe desktop-info
-Shot during
-
-./dist/rusty-wallpaper.exe stop
-Start-Sleep 3
-"== engine exited: $($p.HasExited) (code $($p.ExitCode))"
-Shot after
-
-"== engine log:"
-Get-Content "$env:LOCALAPPDATA/rusty-wallpaper/rusty-wallpaper.log"
+foreach ($mode in 'gdi', 'ulw') {
+    "#################### present mode: $mode"
+    $env:RUSTY_WALLPAPER_PRESENT = $mode
+    $p = Start-Process ./dist/rusty-wallpaper.exe -ArgumentList '--background', '--config', $cfg -PassThru
+    Start-Sleep 8
+    "== engine still running after 8s: $(-not $p.HasExited)"
+    Shot "during-$mode"
+    ./dist/rusty-wallpaper.exe stop
+    Start-Sleep 3
+    "== engine exited: $($p.HasExited) (code $($p.ExitCode))"
+    Shot "after-$mode"
+    "== engine log ($mode):"
+    Get-Content "$env:LOCALAPPDATA/rusty-wallpaper/rusty-wallpaper.log"
+}

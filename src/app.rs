@@ -61,9 +61,11 @@ struct Output {
     monitor: Option<MonitorHandle>,
     /// A fullscreen/maximized app is hiding this output.
     covered: bool,
+    /// Full-resolution frame for platforms that present it themselves.
+    present_buf: Vec<u32>,
     // Declared last so it is dropped after the window: restoring the desktop
     // must happen once our window is gone.
-    _desktop: Option<DesktopGuard>,
+    desktop: Option<DesktopGuard>,
 }
 
 struct App {
@@ -223,7 +225,8 @@ impl App {
                 occluded: false,
                 monitor,
                 covered: false,
-                _desktop: guard,
+                desktop: guard,
+                present_buf: Vec::new(),
             });
         }
         self.context = Some(context);
@@ -319,6 +322,15 @@ impl App {
             },
         );
 
+        if let Some(desktop) = out.desktop.as_mut() {
+            out.present_buf.resize(width as usize * height as usize, 0);
+            out.frame
+                .upscale_into(&mut out.present_buf, width as usize, height as usize);
+            if let Some(result) = desktop.present(&out.present_buf, width as usize, height as usize) {
+                return result;
+            }
+        }
+
         out.surface
             .resize(w, h)
             .map_err(|e| anyhow::anyhow!("resizing surface: {e}"))?;
@@ -408,8 +420,19 @@ impl ApplicationHandler for App {
                     dt: dt * self.config.time_scale,
                     cursor: None,
                 };
-                for o in self.outputs.iter().filter(|o| !o.occluded && !o.covered) {
-                    o.window.request_redraw();
+                // Draw directly rather than waiting for WM_PAINT/expose: a
+                // window parented into the Windows desktop may never get one.
+                let due: Vec<WindowId> = self
+                    .outputs
+                    .iter()
+                    .filter(|o| !o.occluded && !o.covered)
+                    .map(|o| o.window.id())
+                    .collect();
+                for id in due {
+                    if let Err(e) = self.draw(id) {
+                        self.fail(el, e);
+                        return;
+                    }
                 }
             }
             self.next_frame += frame_time;
