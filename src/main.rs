@@ -40,6 +40,8 @@ enum Command {
     List,
     /// List monitors and their indices.
     Monitors,
+    /// Print the desktop's shell windows (for troubleshooting).
+    DesktopInfo,
     /// Render a single frame of a scene to a PNG.
     Render(RenderArgs),
     /// Ask a running wallpaper to quit (Windows).
@@ -154,6 +156,10 @@ fn real_main(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::Monitors) => app::list_monitors(),
+        Some(Command::DesktopInfo) => {
+            print!("{}", platform::desktop_report());
+            Ok(())
+        }
         Some(Command::Ui { config }) => {
             let path = config
                 .or_else(Config::default_path)

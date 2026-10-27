@@ -26,11 +26,12 @@ use windows_sys::Win32::System::Threading::{
     INFINITE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW,
-    GetWindowRect, GetWindowThreadProcessId, IsZoomed, SendMessageTimeoutW, SetLayeredWindowAttributes,
-    SetParent, SetWindowLongPtrW, SetWindowPos, SystemParametersInfoW, GWL_EXSTYLE, GWL_STYLE, HWND_BOTTOM,
-    LWA_ALPHA, SMTO_NORMAL, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP,
+    EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetForegroundWindow, GetWindow,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, IsZoomed,
+    SendMessageTimeoutW, SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW, SetWindowPos,
+    SystemParametersInfoW, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM, LWA_ALPHA,
+    SMTO_NORMAL, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
@@ -218,6 +219,7 @@ pub fn attach_to_desktop(
             size.height
         );
     }
+    log::info!("desktop windows after attaching:\n{}", desktop_report());
     Ok(DesktopGuard { raised: layer.raised })
 }
 
@@ -373,4 +375,89 @@ pub fn autostart(enable: bool, args: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A dump of the shell's desktop windows, for `rusty-wallpaper desktop-info`
+/// and the log: which layout we detected and where our window ended up.
+pub fn desktop_report() -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    match desktop_layer() {
+        Ok(l) => {
+            let _ = writeln!(
+                out,
+                "layout: {}\nProgman {:?}  WorkerW {:?}  DefView {:?}",
+                if l.raised {
+                    "raised (Windows 11 24H2+)"
+                } else {
+                    "classic"
+                },
+                l.progman,
+                l.worker,
+                l.defview
+            );
+        }
+        Err(e) => {
+            let _ = writeln!(out, "layout: error: {e:#}");
+        }
+    }
+    let mut tops: Vec<HWND> = Vec::new();
+    unsafe {
+        EnumWindows(Some(collect_proc), &mut tops as *mut Vec<HWND> as LPARAM);
+    }
+    for top in tops {
+        let class = class_name(top);
+        if class != "Progman" && class != "WorkerW" {
+            continue;
+        }
+        let _ = writeln!(out, "{}", describe(top, 0));
+        unsafe {
+            let mut child = GetWindow(top, GW_CHILD);
+            while !child.is_null() {
+                let _ = writeln!(out, "{}", describe(child, 1));
+                child = GetWindow(child, GW_HWNDNEXT);
+            }
+        }
+    }
+    out
+}
+
+unsafe extern "system" fn collect_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    (*(lparam as *mut Vec<HWND>)).push(hwnd);
+    TRUE
+}
+
+fn class_name(hwnd: HWND) -> String {
+    let mut buf = [0u16; 128];
+    let len = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) }.max(0) as usize;
+    String::from_utf16_lossy(&buf[..len])
+}
+
+fn describe(hwnd: HWND, depth: usize) -> String {
+    unsafe {
+        let mut title = [0u16; 128];
+        let tlen = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32).max(0) as usize;
+        let mut r: RECT = std::mem::zeroed();
+        GetWindowRect(hwnd, &mut r);
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        format!(
+            "{}{hwnd:?} {:?} {:?} visible={} rect=({},{})-({},{}) style={:#x} exstyle={:#x}{}",
+            "  ".repeat(depth),
+            class_name(hwnd),
+            String::from_utf16_lossy(&title[..tlen]),
+            IsWindowVisible(hwnd) != 0,
+            r.left,
+            r.top,
+            r.right,
+            r.bottom,
+            GetWindowLongPtrW(hwnd, GWL_STYLE),
+            GetWindowLongPtrW(hwnd, GWL_EXSTYLE),
+            if pid == GetCurrentProcessId() {
+                "  <- rusty-wallpaper"
+            } else {
+                ""
+            },
+        )
+    }
 }

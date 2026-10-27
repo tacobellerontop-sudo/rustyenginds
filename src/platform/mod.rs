@@ -4,8 +4,9 @@
 mod windows;
 #[cfg(windows)]
 pub use self::windows::{
-    attach_to_desktop, autostart, autostart_enabled, desktop_attributes, desktop_covered, detach_console,
-    hide_console_window, is_running, launched_from_explorer, signal_stop, single_instance, DesktopGuard,
+    attach_to_desktop, autostart, autostart_enabled, desktop_attributes, desktop_covered, desktop_report,
+    detach_console, hide_console_window, is_running, launched_from_explorer, signal_stop, single_instance,
+    DesktopGuard,
 };
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -61,6 +62,10 @@ mod portable {
     }
 
     pub fn detach_console() {}
+
+    pub fn desktop_report() -> String {
+        "desktop-info is only available on Windows".into()
+    }
 
     pub fn is_running() -> bool {
         false
