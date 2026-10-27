@@ -816,6 +816,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "embed-manifest"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba92c8f4591bf29f89716b45e5f5f56577adbb81426e5620c6e994da7c88bb7a"
+
+[[package]]
 name = "env_filter"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2428,6 +2434,7 @@ dependencies = [
  "ctrlc",
  "dirs",
  "eframe",
+ "embed-manifest",
  "env_logger",
  "image",
  "log",

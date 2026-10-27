@@ -21,6 +21,9 @@ softbuffer = "0.4"
 toml = "0.9"
 winit = "0.30"
 
+[build-dependencies]
+embed-manifest = "1.5"
+
 [target.'cfg(windows)'.dependencies]
 rfd = "0.17"
 windows-sys = { version = "0.61", features = [
