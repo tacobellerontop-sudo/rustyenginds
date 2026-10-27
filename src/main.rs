@@ -134,6 +134,13 @@ fn init_logging(background: bool) {
         }
     }
     builder.init();
+
+    // Without a console a panic would vanish without a trace; log it too.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("crashed: {info}");
+        default_hook(info);
+    }));
 }
 
 fn real_main(cli: Cli) -> Result<()> {
@@ -202,6 +209,7 @@ fn run(args: RunArgs) -> Result<()> {
     if args.background {
         platform::detach_console();
     }
+    log::info!("rusty-wallpaper {} starting", env!("CARGO_PKG_VERSION"));
     app::run(app::Options {
         config_path,
         scene: args.scene,

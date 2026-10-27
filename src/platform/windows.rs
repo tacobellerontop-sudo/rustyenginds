@@ -13,8 +13,10 @@ use anyhow::{bail, Context, Result};
 use windows_sys::core::BOOL;
 use windows_sys::w;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, FALSE, HWND, LPARAM, RECT, TRUE,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, FALSE, HWND, LPARAM, POINT, RECT,
+    TRUE,
 };
+use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
 use windows_sys::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
@@ -24,11 +26,11 @@ use windows_sys::Win32::System::Threading::{
     INFINITE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetForegroundWindow, GetSystemMetrics,
-    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsZoomed, SendMessageTimeoutW, SetParent,
-    SetWindowLongPtrW, SetWindowPos, SystemParametersInfoW, GWL_STYLE, SMTO_NORMAL, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER, SWP_NOACTIVATE, SWP_NOZORDER,
-    SWP_SHOWWINDOW, WS_CHILD, WS_POPUP,
+    EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW,
+    GetWindowRect, GetWindowThreadProcessId, IsZoomed, SendMessageTimeoutW, SetLayeredWindowAttributes,
+    SetParent, SetWindowLongPtrW, SetWindowPos, SystemParametersInfoW, GWL_EXSTYLE, GWL_STYLE, HWND_BOTTOM,
+    LWA_ALPHA, SMTO_NORMAL, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP, WS_POPUP,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
@@ -38,10 +40,18 @@ use winit::window::{Window, WindowAttributes};
 
 /// Repaints the normal wallpaper when we exit; otherwise our last frame
 /// stays stuck on the desktop until Explorer redraws.
-pub struct DesktopGuard;
+pub struct DesktopGuard {
+    raised: bool,
+}
 
 impl Drop for DesktopGuard {
     fn drop(&mut self) {
+        // On the raised desktop, resetting the wallpaper destroys the WorkerW
+        // Explorer just created (Lively skips it for the same reason), and the
+        // shell repaints by itself once our child window is gone.
+        if self.raised {
+            return;
+        }
         let mut path = [0u16; 260];
         unsafe {
             if SystemParametersInfoW(
@@ -58,7 +68,84 @@ impl Drop for DesktopGuard {
 }
 
 pub fn desktop_attributes(_el: &ActiveEventLoop, monitor: &MonitorHandle) -> WindowAttributes {
-    super::covering_attributes(monitor).with_skip_taskbar(true)
+    // Hidden until it sits behind the icons, so nothing flashes on screen.
+    super::covering_attributes(monitor)
+        .with_skip_taskbar(true)
+        .with_visible(false)
+}
+
+/// The shell windows we slot ourselves between.
+struct DesktopLayer {
+    progman: HWND,
+    /// Draws the static wallpaper.
+    worker: HWND,
+    /// Hosts the desktop icons.
+    defview: HWND,
+    /// Windows 11 24H2+ "raised desktop": Progman is composed with
+    /// DirectComposition, and DefView and WorkerW are its children.
+    raised: bool,
+}
+
+/// Find (and if needed, ask Explorer to create) the desktop windows.
+/// Mirrors Lively's `WinDesktopCore.SetupDesktopLayer`.
+fn desktop_layer() -> Result<DesktopLayer> {
+    unsafe {
+        let progman = FindWindowW(w!("Progman"), null());
+        if progman.is_null() {
+            bail!("couldn't find Progman; is Explorer running?");
+        }
+        let raised = GetWindowLongPtrW(progman, GWL_EXSTYLE) & WS_EX_NOREDIRECTIONBITMAP as isize != 0;
+
+        // Makes Progman split the wallpaper into a WorkerW behind the icons.
+        let mut result = 0usize;
+        SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, &mut result);
+
+        let mut layer = DesktopLayer {
+            progman,
+            worker: null_mut(),
+            defview: null_mut(),
+            raised,
+        };
+        if raised {
+            // Progman
+            //   SHELLDLL_DefView   <- icons
+            //   WorkerW            <- wallpaper; we go between these two
+            layer.defview = FindWindowExW(progman, null_mut(), w!("SHELLDLL_DefView"), null());
+            layer.worker = FindWindowExW(progman, null_mut(), w!("WorkerW"), null());
+        } else {
+            // WorkerW              <- hosts SHELLDLL_DefView (icons)
+            // WorkerW              <- wallpaper; we become its child
+            // Progman
+            EnumWindows(Some(find_worker_proc), &mut layer as *mut DesktopLayer as LPARAM);
+        }
+        log::info!(
+            "desktop layout: {} (Progman {progman:?}, WorkerW {:?}, DefView {:?})",
+            if raised {
+                "raised, Windows 11 24H2+"
+            } else {
+                "classic"
+            },
+            layer.worker,
+            layer.defview,
+        );
+        if layer.worker.is_null() {
+            bail!("couldn't find the desktop WorkerW window");
+        }
+        if raised && layer.defview.is_null() {
+            bail!("couldn't find the desktop icon layer (SHELLDLL_DefView)");
+        }
+        Ok(layer)
+    }
+}
+
+unsafe extern "system" fn find_worker_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let defview = FindWindowExW(hwnd, null_mut(), w!("SHELLDLL_DefView"), null());
+    if !defview.is_null() {
+        let layer = &mut *(lparam as *mut DesktopLayer);
+        layer.defview = defview;
+        layer.worker = FindWindowExW(null_mut(), hwnd, w!("WorkerW"), null());
+    }
+    TRUE
 }
 
 pub fn attach_to_desktop(
@@ -70,69 +157,68 @@ pub fn attach_to_desktop(
         RawWindowHandle::Win32(h) => h.hwnd.get() as HWND,
         _ => bail!("expected a Win32 window handle"),
     };
-    let worker = find_worker_w()?;
-    let pos = monitor.position();
-    let size = monitor.size();
+    let layer = desktop_layer()?;
+    let (pos, size) = (monitor.position(), monitor.size());
     unsafe {
-        // Child windows use the parent's client coordinates, and WorkerW spans
-        // the whole virtual screen, whose origin can be negative.
-        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
         SetWindowLongPtrW(
             hwnd,
             GWL_STYLE,
             (style & !(WS_POPUP as isize)) | WS_CHILD as isize,
         );
-        if SetParent(hwnd, worker).is_null() {
-            bail!("SetParent onto the desktop WorkerW failed");
+
+        let parent = if layer.raised {
+            // Children of the DirectComposition-backed Progman only show up
+            // when layered. This must happen before SetParent.
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
+            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+            layer.progman
+        } else {
+            layer.worker
+        };
+        if SetParent(hwnd, parent).is_null() {
+            bail!("SetParent onto the desktop failed (error {})", GetLastError());
         }
+
+        // Child windows are positioned in the parent's client coordinates.
+        let mut origin = POINT { x: pos.x, y: pos.y };
+        ScreenToClient(parent, &mut origin);
+        let (insert_after, zflag) = if layer.raised {
+            (layer.defview, 0) // directly beneath the icons
+        } else {
+            (null_mut(), SWP_NOZORDER)
+        };
         SetWindowPos(
             hwnd,
-            null_mut(),
-            pos.x - vx,
-            pos.y - vy,
+            insert_after,
+            origin.x,
+            origin.y,
             size.width as i32,
             size.height as i32,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW | zflag,
+        );
+        if layer.raised {
+            // The static wallpaper must stay underneath us.
+            SetWindowPos(
+                layer.worker,
+                HWND_BOTTOM,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        log::info!(
+            "attached to the desktop at ({}, {}) {}x{}",
+            origin.x,
+            origin.y,
+            size.width,
+            size.height
         );
     }
-    Ok(DesktopGuard)
-}
-
-fn find_worker_w() -> Result<HWND> {
-    unsafe {
-        let progman = FindWindowW(w!("Progman"), null());
-        if progman.is_null() {
-            bail!("couldn't find Progman; is Explorer running?");
-        }
-        let mut result = 0usize;
-        SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, &mut result);
-        SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &mut result);
-
-        // Classic layout: the WorkerW we want is the top-level sibling right
-        // after the window that hosts SHELLDLL_DefView.
-        let mut worker: HWND = null_mut();
-        EnumWindows(Some(find_worker_proc), &mut worker as *mut HWND as LPARAM);
-
-        // Windows 11 24H2+: WorkerW became a child of Progman.
-        if worker.is_null() {
-            worker = FindWindowExW(progman, null_mut(), w!("WorkerW"), null());
-        }
-        if worker.is_null() {
-            bail!("couldn't find the desktop WorkerW window");
-        }
-        Ok(worker)
-    }
-}
-
-unsafe extern "system" fn find_worker_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let shell = FindWindowExW(hwnd, null_mut(), w!("SHELLDLL_DefView"), null());
-    if !shell.is_null() {
-        let out = lparam as *mut HWND;
-        *out = FindWindowExW(null_mut(), hwnd, w!("WorkerW"), null());
-    }
-    TRUE
+    Ok(DesktopGuard { raised: layer.raised })
 }
 
 /// True when the foreground window is fullscreen or maximized on `monitor`,

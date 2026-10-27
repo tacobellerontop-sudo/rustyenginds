@@ -194,6 +194,8 @@ struct SettingsApp {
     add_path: String,
     child: Option<Child>,
     autostart: bool,
+    /// The last wallpaper process exited with an error.
+    engine_failed: bool,
 }
 
 impl SettingsApp {
@@ -238,6 +240,7 @@ impl SettingsApp {
             add_path: String::new(),
             child: None,
             autostart: platform::autostart_enabled(),
+            engine_failed: false,
         };
         app.adopt_configured_media();
         for item in app.config.library.clone() {
@@ -424,10 +427,8 @@ impl SettingsApp {
                 Ok(Some(status)) => {
                     self.child = None;
                     if !status.success() {
-                        self.notify(format!(
-                            "The wallpaper stopped with an error. Details: {}",
-                            log_hint()
-                        ));
+                        self.engine_failed = true;
+                        self.notify("The wallpaper stopped with an error");
                     }
                 }
                 Err(_) => self.child = None,
@@ -470,6 +471,7 @@ impl SettingsApp {
         match cmd.spawn() {
             Ok(child) => {
                 self.child = Some(child);
+                self.engine_failed = false;
                 self.notify("Wallpaper is live on your desktop");
             }
             Err(e) => self.notify(format!("Couldn't start the wallpaper: {e}")),
@@ -526,6 +528,9 @@ impl SettingsApp {
                     } else {
                         self.start();
                     }
+                }
+                if self.engine_failed && !running && ui.add(secondary_button("Open log")).clicked() {
+                    open_log();
                 }
                 ui.add_space(4.0);
                 status_pill(ui, running);
@@ -1316,13 +1321,20 @@ fn wrap_words(s: &str, width: usize) -> String {
     out
 }
 
-fn log_hint() -> String {
-    dirs::data_local_dir()
-        .map(|d| {
-            d.join("rusty-wallpaper")
-                .join("rusty-wallpaper.log")
-                .display()
-                .to_string()
-        })
-        .unwrap_or_else(|| "the log file".into())
+fn log_path() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|d| d.join("rusty-wallpaper").join("rusty-wallpaper.log"))
+}
+
+/// Show the background engine's log in the default text viewer.
+fn open_log() {
+    let Some(path) = log_path() else { return };
+    let viewer = if cfg!(windows) { "notepad" } else { "xdg-open" };
+    let mut cmd = Command::new(viewer);
+    cmd.arg(&path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Err(e) = cmd.spawn() {
+        log::error!("couldn't open {}: {e}", path.display());
+    }
 }
