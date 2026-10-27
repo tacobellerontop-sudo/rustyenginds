@@ -1,27 +1,58 @@
 # Runs the wallpaper on the CI runner's real desktop and reports what
 # happened: shell window tree, sampled screen colors before/during/after,
-# and the engine's log. Screenshots are uploaded as an artifact.
+# and the engine's log.
 $ErrorActionPreference = 'Continue'
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 New-Item -ItemType Directory smoke -Force | Out-Null
 
-function Shot($name) {
-    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    # CaptureBlt: without it, layered windows (like ours) are left out.
-    $op = [System.Drawing.CopyPixelOperation]::SourceCopy -bor [System.Drawing.CopyPixelOperation]::CaptureBlt
-    try { $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size, $op) }
-    catch { "== $name screenshot failed: $_"; return }
-    $bmp.Save("$PWD/smoke/$name.png")
-    "== $name ($($b.Width)x$($b.Height)) sampled colors:"
-    foreach ($fy in 0.1, 0.3, 0.5, 0.7, 0.9) {
-        $row = foreach ($fx in 0.1, 0.3, 0.5, 0.7, 0.9) {
-            $c = $bmp.GetPixel([int]($b.Width * $fx), [int]($b.Height * $fy))
-            '{0:x2}{1:x2}{2:x2}' -f $c.R, $c.G, $c.B
+# Screen capture through BitBlt with CAPTUREBLT, which (unlike the
+# CopyFromScreen default) includes layered windows such as ours.
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class ScreenGrab {
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int w, int h);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+    [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint rop);
+    [DllImport("gdi32.dll")] static extern uint GetPixel(IntPtr dc, int x, int y);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+
+    // Returns rows of "rrggbb" samples on a 5x5 grid.
+    public static string[] Sample() {
+        int w = GetSystemMetrics(0), h = GetSystemMetrics(1);
+        IntPtr screen = GetDC(IntPtr.Zero);
+        IntPtr mem = CreateCompatibleDC(screen);
+        IntPtr bmp = CreateCompatibleBitmap(screen, w, h);
+        IntPtr old = SelectObject(mem, bmp);
+        BitBlt(mem, 0, 0, w, h, screen, 0, 0, 0x00CC0020 | 0x40000000); // SRCCOPY | CAPTUREBLT
+        double[] f = { 0.1, 0.3, 0.5, 0.7, 0.9 };
+        string[] rows = new string[6];
+        rows[0] = w + "x" + h;
+        for (int r = 0; r < 5; r++) {
+            string row = "";
+            for (int c = 0; c < 5; c++) {
+                uint p = GetPixel(mem, (int)(w * f[c]), (int)(h * f[r]));
+                row += string.Format("{0:x2}{1:x2}{2:x2} ", p & 0xFF, (p >> 8) & 0xFF, (p >> 16) & 0xFF);
+            }
+            rows[r + 1] = row;
         }
-        "   " + ($row -join ' ')
+        SelectObject(mem, old);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        ReleaseDC(IntPtr.Zero, screen);
+        return rows;
     }
+}
+"@
+
+function Shot($name) {
+    $rows = [ScreenGrab]::Sample()
+    "== $name ($($rows[0])) sampled colors:"
+    $rows[1..5] | ForEach-Object { "   $_" }
 }
 
 $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'

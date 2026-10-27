@@ -39,11 +39,6 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./ci/desktop-smoke.ps1
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: desktop-smoke-screenshots
-          path: smoke/
 
   linux:
     runs-on: ubuntu-latest
