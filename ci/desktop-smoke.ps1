@@ -78,9 +78,9 @@ Shot before
 $trials = @(
     @('none', 'gdi'),
     @('default', 'gdi'),
+    @('default', 'dx'),
     @('default', 'ulw'),
-    @('progman-top', 'gdi'),
-    @('worker', 'gdi')
+    @('progman-top', 'dx')
 )
 foreach ($t in $trials) {
     $attach, $mode = $t
@@ -94,5 +94,5 @@ foreach ($t in $trials) {
     ./dist/rusty-wallpaper.exe stop
     Start-Sleep 2
     "== engine log:"
-    Get-Content "$env:LOCALAPPDATA/rusty-wallpaper/rusty-wallpaper.log" | Select-String -Pattern 'presenting|attached|first frame|rusty-wallpaper \(|ERROR|WARN'
+    Get-Content "$env:LOCALAPPDATA/rusty-wallpaper/rusty-wallpaper.log" | Select-String -Pattern 'presenting|attached|first frame|rusty-wallpaper \(|process sees|swap chain|Direct3D|ERROR|WARN'
 }

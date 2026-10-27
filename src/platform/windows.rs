@@ -35,8 +35,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SendMessageTimeoutW, SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW, SetWindowPos,
     SystemParametersInfoW, UpdateLayeredWindow, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, HWND_BOTTOM,
     HWND_TOP, HWND_TOPMOST, LWA_ALPHA, SMTO_NORMAL, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, ULW_ALPHA, WS_CHILD, WS_EX_LAYERED,
-    WS_EX_NOREDIRECTIONBITMAP, WS_POPUP,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, ULW_ALPHA, WS_CAPTION, WS_CHILD,
+    WS_EX_APPWINDOW, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_NOREDIRECTIONBITMAP, WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
@@ -48,16 +50,20 @@ use winit::window::{Window, WindowAttributes};
 /// stays stuck on the desktop until Explorer redraws.
 pub struct DesktopGuard {
     raised: bool,
-    /// Set when frames are pushed with UpdateLayeredWindow instead of
-    /// painted through the window's DC.
-    layered: Option<LayeredPresenter>,
+    /// Set when frames are pushed by us (DirectX, UpdateLayeredWindow)
+    /// instead of painted through the window's DC by softbuffer.
+    presenter: Option<Box<dyn FramePresenter>>,
+}
+
+trait FramePresenter {
+    fn present(&mut self, pixels: &[u32], width: usize, height: usize) -> Result<()>;
 }
 
 impl DesktopGuard {
     /// Present a full-size frame ourselves, if this window needs it.
     /// `None` means "use the regular softbuffer path".
     pub fn present(&mut self, pixels: &[u32], width: usize, height: usize) -> Option<Result<()>> {
-        self.layered.as_mut().map(|p| p.present(pixels, width, height))
+        self.presenter.as_mut().map(|p| p.present(pixels, width, height))
     }
 }
 
@@ -69,11 +75,15 @@ enum PresentMode {
     Gdi,
     /// WS_EX_LAYERED + UpdateLayeredWindow with a bitmap each frame.
     UpdateLayered,
+    /// WS_EX_LAYERED + SetLayeredWindowAttributes, frames presented through
+    /// a Direct3D 11 swap chain (what Lively's players effectively do).
+    DirectX,
 }
 
 fn present_mode() -> PresentMode {
     match std::env::var("RUSTY_WALLPAPER_PRESENT").as_deref() {
         Ok("ulw") => PresentMode::UpdateLayered,
+        Ok("dx") => PresentMode::DirectX,
         _ => PresentMode::Gdi,
     }
 }
@@ -87,6 +97,12 @@ struct LayeredPresenter {
     old: HGDIOBJ,
     bits: *mut u32,
     size: (usize, usize),
+}
+
+impl FramePresenter for LayeredPresenter {
+    fn present(&mut self, pixels: &[u32], w: usize, h: usize) -> Result<()> {
+        LayeredPresenter::present(self, pixels, w, h)
+    }
 }
 
 impl LayeredPresenter {
@@ -329,15 +345,23 @@ pub fn attach_to_desktop(
         }
         return Ok(DesktopGuard {
             raised: true,
-            layered: None,
+            presenter: None,
         });
     }
+    log_os_version();
     unsafe {
+        // Like Lively's BorderlessWinStyle + RemoveWindowFromTaskbar: a bare
+        // child window with no frame, caption or app-window behaviour.
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let strip = WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX;
+        SetWindowLongPtrW(hwnd, GWL_STYLE, (style & !(strip as isize)) | WS_CHILD as isize);
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let strip_ex =
+            WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_APPWINDOW;
         SetWindowLongPtrW(
             hwnd,
-            GWL_STYLE,
-            (style & !(WS_POPUP as isize)) | WS_CHILD as isize,
+            GWL_EXSTYLE,
+            (ex & !(strip_ex as isize)) | (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) as isize,
         );
 
         let parent = if layer.raised {
@@ -346,7 +370,7 @@ pub fn attach_to_desktop(
             let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
             // UpdateLayeredWindow refuses windows that had their attributes set.
-            if mode == PresentMode::Gdi {
+            if mode != PresentMode::UpdateLayered {
                 SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
             }
             if placement == "worker" {
@@ -401,13 +425,20 @@ pub fn attach_to_desktop(
         );
     }
     log::info!("desktop windows after attaching:\n{}", desktop_report());
-    let layered = match mode {
-        PresentMode::UpdateLayered => Some(LayeredPresenter::new(hwnd)?),
+    let presenter: Option<Box<dyn FramePresenter>> = match mode {
+        PresentMode::UpdateLayered => Some(Box::new(LayeredPresenter::new(hwnd)?)),
+        PresentMode::DirectX => match dx::DxPresenter::new(hwnd) {
+            Ok(p) => Some(Box::new(p)),
+            Err(e) => {
+                log::warn!("Direct3D presenter unavailable, falling back to GDI: {e:#}");
+                None
+            }
+        },
         PresentMode::Gdi => None,
     };
     Ok(DesktopGuard {
         raised: layer.raised,
-        layered,
+        presenter,
     })
 }
 
@@ -649,5 +680,151 @@ fn describe(hwnd: HWND, depth: usize) -> String {
                 String::new()
             },
         )
+    }
+}
+
+/// Windows reports its real version to a process only if the process's
+/// manifest declares it compatible; otherwise it claims 6.2 (Windows 8).
+/// Logged so we can tell whether our embedded manifest is in effect.
+fn log_os_version() {
+    use windows::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOW};
+    let mut info = OSVERSIONINFOW {
+        dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
+    #[allow(deprecated)]
+    if unsafe { GetVersionExW(&mut info) }.is_ok() {
+        log::info!(
+            "process sees Windows {}.{} build {} (10.0 = manifest active, 6.2 = no manifest)",
+            info.dwMajorVersion,
+            info.dwMinorVersion,
+            info.dwBuildNumber
+        );
+    }
+}
+
+mod dx {
+    //! Presents frames through a Direct3D 11 blt-model swap chain.
+
+    use anyhow::{Context, Result};
+    use windows::core::Interface;
+    use windows::Win32::Foundation::{HMODULE, HWND};
+    use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
+    };
+    use windows::Win32::Graphics::Dxgi::{
+        IDXGIDevice, IDXGIFactory2, IDXGISwapChain1, DXGI_PRESENT, DXGI_SCALING_STRETCH,
+        DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_DISCARD,
+        DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    };
+
+    pub struct DxPresenter {
+        hwnd: HWND,
+        device: ID3D11Device,
+        context: ID3D11DeviceContext,
+        swap: Option<IDXGISwapChain1>,
+        size: (usize, usize),
+    }
+
+    impl DxPresenter {
+        pub fn new(hwnd: super::HWND) -> Result<Self> {
+            let (device, context) = create_device()?;
+            Ok(Self {
+                hwnd: HWND(hwnd),
+                device,
+                context,
+                swap: None,
+                size: (0, 0),
+            })
+        }
+
+        fn swap_chain(&mut self, w: usize, h: usize) -> Result<IDXGISwapChain1> {
+            if let Some(swap) = &self.swap {
+                if self.size != (w, h) {
+                    unsafe {
+                        swap.ResizeBuffers(
+                            0,
+                            w as u32,
+                            h as u32,
+                            DXGI_FORMAT_UNKNOWN,
+                            DXGI_SWAP_CHAIN_FLAG(0),
+                        )
+                    }
+                    .context("resizing swap chain")?;
+                    self.size = (w, h);
+                }
+                return Ok(swap.clone());
+            }
+            let desc = DXGI_SWAP_CHAIN_DESC1 {
+                Width: w as u32,
+                Height: h as u32,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                BufferCount: 1,
+                Scaling: DXGI_SCALING_STRETCH,
+                // Blt model: presents land in the window's redirection
+                // surface, which is what a layered child is composed from.
+                SwapEffect: DXGI_SWAP_EFFECT_DISCARD,
+                ..Default::default()
+            };
+            let swap = unsafe {
+                let dxgi: IDXGIDevice = self.device.cast()?;
+                let factory: IDXGIFactory2 = dxgi.GetAdapter()?.GetParent()?;
+                factory.CreateSwapChainForHwnd(&self.device, self.hwnd, &desc, None, None)
+            }
+            .context("creating swap chain")?;
+            log::info!("Direct3D 11 swap chain created ({w}x{h})");
+            self.size = (w, h);
+            self.swap = Some(swap.clone());
+            Ok(swap)
+        }
+    }
+
+    impl super::FramePresenter for DxPresenter {
+        fn present(&mut self, pixels: &[u32], w: usize, h: usize) -> Result<()> {
+            let swap = self.swap_chain(w, h)?;
+            unsafe {
+                let back: ID3D11Texture2D = swap.GetBuffer(0)?;
+                // 0x00RRGGBB little-endian is B,G,R,0 in memory: BGRA, alpha ignored.
+                self.context
+                    .UpdateSubresource(&back, 0, None, pixels.as_ptr().cast(), (w * 4) as u32, 0);
+                swap.Present(0, DXGI_PRESENT(0)).ok().context("presenting")?;
+            }
+            Ok(())
+        }
+    }
+
+    fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
+        // Hardware first; WARP (software) keeps it working on GPU-less machines.
+        let mut last_err = None;
+        for driver in [D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP] {
+            let mut device = None;
+            let mut context = None;
+            let r = unsafe {
+                D3D11CreateDevice(
+                    None,
+                    driver,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    None,
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    Some(&mut context),
+                )
+            };
+            match (r, device, context) {
+                (Ok(()), Some(d), Some(c)) => return Ok((d, c)),
+                (Err(e), _, _) => last_err = Some(e),
+                _ => {}
+            }
+        }
+        Err(anyhow::anyhow!("D3D11CreateDevice failed: {last_err:?}"))
     }
 }
