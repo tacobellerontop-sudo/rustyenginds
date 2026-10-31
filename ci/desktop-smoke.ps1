@@ -20,15 +20,24 @@ public static class ScreenGrab {
     [DllImport("gdi32.dll")] static extern uint GetPixel(IntPtr dc, int x, int y);
     [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
 
     // Returns rows of "rrggbb" samples on a 5x5 grid.
-    public static string[] Sample() {
+    // progman: render Progman (with its children) through PrintWindow
+    // instead of reading the composed screen, as a second opinion on what
+    // the desktop contains.
+    public static string[] Sample(bool progman) {
         int w = GetSystemMetrics(0), h = GetSystemMetrics(1);
         IntPtr screen = GetDC(IntPtr.Zero);
         IntPtr mem = CreateCompatibleDC(screen);
         IntPtr bmp = CreateCompatibleBitmap(screen, w, h);
         IntPtr old = SelectObject(mem, bmp);
-        BitBlt(mem, 0, 0, w, h, screen, 0, 0, 0x00CC0020 | 0x40000000); // SRCCOPY | CAPTUREBLT
+        if (progman) {
+            PrintWindow(FindWindow("Progman", null), mem, 2); // PW_RENDERFULLCONTENT
+        } else {
+            BitBlt(mem, 0, 0, w, h, screen, 0, 0, 0x00CC0020 | 0x40000000); // SRCCOPY | CAPTUREBLT
+        }
         double[] f = { 0.1, 0.3, 0.5, 0.7, 0.9 };
         string[] rows = new string[6];
         rows[0] = w + "x" + h;
@@ -50,8 +59,11 @@ public static class ScreenGrab {
 "@
 
 function Shot($name) {
-    $rows = [ScreenGrab]::Sample()
+    $rows = [ScreenGrab]::Sample($false)
     "== $name ($($rows[0])) sampled colors:"
+    $rows[1..5] | ForEach-Object { "   $_" }
+    $rows = [ScreenGrab]::Sample($true)
+    "== $name, Progman via PrintWindow:"
     $rows[1..5] | ForEach-Object { "   $_" }
 }
 
@@ -77,6 +89,7 @@ Shot before
 # topmost window, proving the sampling can see our pixels at all.
 $trials = @(
     @('none', 'gdi'),
+    @('none-layered', 'gdi'),
     @('default', 'gdi'),
     @('default', 'dx'),
     @('default', 'ulw'),
@@ -86,11 +99,14 @@ foreach ($t in $trials) {
     $attach, $mode = $t
     "#################### placement: $attach, present: $mode"
     $env:RUSTY_WALLPAPER_ATTACH = $(if ($attach -eq 'default') { '' } else { $attach })
+    Remove-Item "$env:LOCALAPPDATA/rusty-wallpaper/rusty-wallpaper.log" -ErrorAction SilentlyContinue
     $env:RUSTY_WALLPAPER_PRESENT = $mode
     $p = Start-Process ./dist/rusty-wallpaper.exe -ArgumentList '--background', '--config', $cfg -PassThru
     Start-Sleep 6
     "== engine still running: $(-not $p.HasExited)"
     Shot "during $attach/$mode"
+    "== desktop while running:"
+    ./dist/rusty-wallpaper.exe desktop-info
     ./dist/rusty-wallpaper.exe stop
     Start-Sleep 2
     "== engine log:"

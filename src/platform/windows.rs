@@ -242,9 +242,9 @@ struct DesktopLayer {
     raised: bool,
 }
 
-/// Find (and if needed, ask Explorer to create) the desktop windows.
+/// Find (and with `create`, ask Explorer to create) the desktop windows.
 /// Mirrors Lively's `WinDesktopCore.SetupDesktopLayer`.
-fn desktop_layer() -> Result<DesktopLayer> {
+fn desktop_layer(create: bool) -> Result<DesktopLayer> {
     unsafe {
         let progman = FindWindowW(w!("Progman"), null());
         if progman.is_null() {
@@ -253,8 +253,12 @@ fn desktop_layer() -> Result<DesktopLayer> {
         let raised = GetWindowLongPtrW(progman, GWL_EXSTYLE) & WS_EX_NOREDIRECTIONBITMAP as isize != 0;
 
         // Makes Progman split the wallpaper into a WorkerW behind the icons.
-        let mut result = 0usize;
-        SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, &mut result);
+        // Only when attaching: Explorer may reshuffle its windows in response,
+        // which a diagnostic dump must not do to an attached wallpaper.
+        if create {
+            let mut result = 0usize;
+            SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, &mut result);
+        }
 
         let mut layer = DesktopLayer {
             progman,
@@ -313,7 +317,7 @@ pub fn attach_to_desktop(
         RawWindowHandle::Win32(h) => h.hwnd.get() as HWND,
         _ => bail!("expected a Win32 window handle"),
     };
-    let layer = desktop_layer()?;
+    let layer = desktop_layer(true)?;
     let mode = if layer.raised {
         present_mode()
     } else {
@@ -330,9 +334,16 @@ pub fn attach_to_desktop(
         }
     );
     let (pos, size) = (monitor.position(), monitor.size());
-    if placement == "none" {
-        // Control experiment: an ordinary top-level window over the monitor.
+    if placement == "none" || placement == "none-layered" {
+        // Control experiment: an ordinary top-level window over the monitor,
+        // optionally layered like the attached one, to tell "layered windows
+        // don't paint" apart from "children of Progman aren't composed".
         unsafe {
+            if placement == "none-layered" {
+                let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
+                SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+            }
             SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
@@ -601,7 +612,7 @@ pub fn autostart(enable: bool, args: &str) -> Result<()> {
 pub fn desktop_report() -> String {
     use std::fmt::Write;
     let mut out = String::new();
-    match desktop_layer() {
+    match desktop_layer(false) {
         Ok(l) => {
             let _ = writeln!(
                 out,
