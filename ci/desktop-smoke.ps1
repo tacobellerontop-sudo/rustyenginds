@@ -93,7 +93,8 @@ $trials = @(
     @('default', 'gdi'),
     @('default', 'dx'),
     @('default', 'ulw'),
-    @('progman-top', 'dx')
+    @('progman-top', 'dx'),
+    @('defview', 'gdi')
 )
 foreach ($t in $trials) {
     $attach, $mode = $t

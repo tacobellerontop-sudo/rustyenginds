@@ -386,6 +386,9 @@ pub fn attach_to_desktop(
             }
             if placement == "worker" {
                 layer.worker
+            } else if placement == "defview" {
+                // Inside the icon layer, underneath the icon list view.
+                layer.defview
             } else {
                 layer.progman
             }
@@ -401,6 +404,8 @@ pub fn attach_to_desktop(
         ScreenToClient(parent, &mut origin);
         let (insert_after, zflag) = if layer.raised && placement == "progman-top" {
             (HWND_TOP, 0)
+        } else if layer.raised && placement == "defview" {
+            (HWND_BOTTOM, 0)
         } else if layer.raised && placement != "worker" {
             (layer.defview, 0) // directly beneath the icons
         } else {
